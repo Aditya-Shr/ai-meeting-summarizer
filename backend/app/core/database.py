@@ -22,4 +22,9 @@ def get_db():
 def recreate_tables():
     """Drop and recreate all tables"""
     Base.metadata.drop_all(bind=engine)
-    Base.metadata.create_all(bind=engine) 
+    Base.metadata.create_all(bind=engine)
+
+
+def init_db():
+    """Initialize the database and create tables"""
+    Base.metadata.create_all(bind=engine)

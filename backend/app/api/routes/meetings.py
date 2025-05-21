@@ -10,15 +10,29 @@ from app.services.summarization_service import SummarizationService
 from app.services.calendar_service import CalendarService
 from app.services.action_item_service import ActionItemService
 from app.services.decision_service import DecisionService
+from app.core.process_manager import ProcessManager
 import json
 import os
 import shutil
 from datetime import datetime, timedelta
+import uuid
+from fastapi.responses import JSONResponse
+from pydantic import BaseModel
 
 # Create uploads directory if it doesn't exist
 os.makedirs("uploads", exist_ok=True)
 
+# Temporary storage for uploaded files (in a real app, use a database or proper file storage)
+TEMP_FILES = {}
+
 router = APIRouter()
+
+class DirectScheduleRequest(BaseModel):
+    title: str
+    description: str = ""
+    start_time: datetime
+    end_time: datetime
+    attendees: Optional[List[Dict[str, str]]] = None
 
 @router.post("/", response_model=MeetingSchema)
 async def create_meeting(
@@ -26,7 +40,29 @@ async def create_meeting(
     db: Session = Depends(get_db)
 ):
     """Create a new meeting with all available fields"""
-    return MeetingService.create_meeting(db, meeting)
+    created_meeting = MeetingService.create_meeting(db, meeting)
+
+    if meeting.start_time and meeting.end_time:
+        try:
+            calendar_event = CalendarService.create_meeting_event(
+                summary=meeting.title,
+                description=meeting.description or "",
+                start_time=meeting.start_time,
+                end_time=meeting.end_time,
+                attendees=meeting.attendees
+            )
+            # Update the meeting with the calendar event ID
+            meeting_update_payload = MeetingUpdate(calendar_event_id=calendar_event['event_id'])
+            MeetingService.update_meeting(db, created_meeting.id, meeting_update_payload)
+            # Refresh the created_meeting to include the calendar_event_id
+            created_meeting = MeetingService.get_meeting(db, created_meeting.id) 
+        except Exception as e:
+            # Log the error, but don't fail the meeting creation
+            print(f"Failed to schedule meeting {created_meeting.id} on calendar: {e}")
+            # Optionally, you could raise an HTTPException or return a specific message
+            # For now, we'll let the meeting be created without a calendar event
+
+    return created_meeting
 
 @router.get("/", response_model=List[MeetingSchema])
 async def get_meetings(
@@ -242,27 +278,22 @@ async def summarize_meeting(
     try:
         # Generate summary
         summary = SummarizationService.summarize_text(meeting.transcript)
-        
-        # Extract action items and decisions
+        # Extract action items and decisions from transcript (not summary)
         action_items = SummarizationService.extract_action_items(meeting.transcript)
         decisions = SummarizationService.extract_decisions(meeting.transcript)
-        
         # Ensure action_items and decisions are lists
         if action_items is None:
             action_items = []
         if decisions is None:
             decisions = []
-            
         # Update meeting with summary
         meeting_update = MeetingUpdate(summary=summary)
         updated_meeting = MeetingService.update_meeting(db, meeting_id, meeting_update)
-        
         # Save action items
         saved_action_items = []
         for item in action_items:
             if not item.get('title'):
                 continue
-                
             action_item = ActionItemCreate(
                 meeting_id=meeting_id,
                 title=item.get('title', ''),
@@ -272,13 +303,11 @@ async def summarize_meeting(
             )
             saved_item = ActionItemService.create_action_item(db, action_item)
             saved_action_items.append(saved_item)
-        
         # Save decisions
         saved_decisions = []
         for decision in decisions:
             if not decision.get('title'):
                 continue
-                
             decision_item = DecisionCreate(
                 meeting_id=meeting_id,
                 title=decision.get('title', ''),
@@ -288,7 +317,6 @@ async def summarize_meeting(
             )
             saved_decision = DecisionService.create_decision(db, decision_item)
             saved_decisions.append(saved_decision)
-        
         return {
             "message": f"Summarization completed for meeting {meeting_id}",
             "summary": summary,
@@ -339,7 +367,12 @@ async def schedule_meeting(
         MeetingService.update_meeting(db, meeting_id, meeting_update)
         
         return {
-            "message": f"Meeting scheduled successfully",
+            "message": "Meeting scheduled successfully",
+            "id": meeting.id,
+            "title": meeting.title,
+            "description": meeting.description,
+            "start_time": meeting.start_time if hasattr(meeting, 'start_time') else None,
+            "end_time": meeting.end_time if hasattr(meeting, 'end_time') else None,
             "event_id": event.get("event_id"),
             "calendar_link": event.get("html_link"),
             "meet_link": event.get("meet_link")
@@ -365,4 +398,211 @@ async def get_upcoming_meetings(
         raise e
     except Exception as e:
         print(f"Error retrieving calendar events: {str(e)}")
-        raise HTTPException(status_code=500, detail=f"Error retrieving calendar events: {str(e)}") 
+        raise HTTPException(status_code=500, detail=f"Error retrieving calendar events: {str(e)}")
+
+@router.post("/upload-direct")
+async def upload_audio_direct(
+    file: UploadFile = File(...),
+    transcribe: bool = Form(False),
+    summarize: bool = Form(False),
+    process_id: str = Form(None)  # Accept process_id
+):
+    """Upload audio file directly and optionally transcribe and summarize."""
+    try:
+        file_id = process_id if process_id else str(uuid.uuid4())
+        file_path = f"uploads/{file_id}_{file.filename}"
+        
+        with open(file_path, "wb") as buffer:
+            shutil.copyfileobj(file.file, buffer)
+        
+        TEMP_FILES[file_id] = {
+            "file_path": file_path,
+            "original_filename": file.filename,
+            "transcript": None,
+            "summary": None,
+            "action_items": None,
+            "decisions": None
+        }
+        
+        response_data = {
+            "file_id": file_id,
+            "filename": file.filename,
+            "message": "File uploaded successfully."
+        }
+
+        if transcribe or summarize:
+            try:
+                print(f"Transcribing file_id: {file_id}")
+                with open(file_path, "rb") as audio_file_for_transcription:
+                    upload_file_for_transcription = UploadFile(
+                        filename=file.filename, 
+                        file=audio_file_for_transcription
+                    )
+                    transcript_text = await TranscriptionService.transcribe_audio(
+                        upload_file_for_transcription, 
+                        "huggingface",
+                        process_id=file_id
+                    )
+                TEMP_FILES[file_id]["transcript"] = transcript_text
+                response_data["transcript"] = transcript_text
+                response_data["message"] += " Transcription completed."
+                print(f"Transcription successful for file_id: {file_id}")
+            except HTTPException as e:
+                if e.status_code == 499:  # Cancelled
+                    return JSONResponse(
+                        status_code=499,
+                        content={"message": "Process cancelled by user", "file_id": file_id}
+                    )
+                print(f"Error during transcription for file_id {file_id}: {str(e)}")
+                TEMP_FILES[file_id]["transcription_error"] = str(e)
+                response_data["transcription_error"] = str(e)
+                response_data["message"] += " Transcription failed."
+                if summarize:
+                    response_data["summary_error"] = "Summarization skipped due to transcription failure."
+                return JSONResponse(status_code=500, content=response_data)
+
+        if summarize:
+            if not TEMP_FILES[file_id]["transcript"]:
+                print(f"Summarization skipped for file_id {file_id}: transcript not available.")
+                response_data["summary_error"] = "Summarization skipped: transcript not available or transcription failed."
+                return JSONResponse(status_code=400, content=response_data)
+            try:
+                print(f"Summarizing transcript for file_id: {file_id}")
+                summary = SummarizationService.summarize_text(TEMP_FILES[file_id]["transcript"])
+                action_items = SummarizationService.extract_action_items(TEMP_FILES[file_id]["transcript"])
+                decisions = SummarizationService.extract_decisions(TEMP_FILES[file_id]["transcript"])
+                TEMP_FILES[file_id]["summary"] = summary
+                TEMP_FILES[file_id]["action_items"] = action_items
+                TEMP_FILES[file_id]["decisions"] = decisions
+                response_data["summary"] = summary
+                response_data["action_items"] = action_items
+                response_data["decisions"] = decisions
+                response_data["message"] += " Summarization completed."
+                print(f"Summarization successful for file_id: {file_id}")
+            except Exception as e:
+                print(f"Error during summarization for file_id {file_id}: {str(e)}")
+                TEMP_FILES[file_id]["summary_error"] = str(e)
+                response_data["summary_error"] = str(e)
+                response_data["message"] += " Summarization failed."
+                return JSONResponse(status_code=500, content=response_data)
+        return response_data
+    except Exception as e:
+        print(f"Error in upload_audio_direct: {str(e)}")
+        raise HTTPException(status_code=500, detail=f"Error uploading audio: {str(e)}")
+
+@router.post("/transcribe-direct/{file_id}")
+async def transcribe_audio_direct_separate(file_id: str):
+    """Transcribe audio using file ID from direct upload (separate endpoint)."""
+    if file_id not in TEMP_FILES:
+        raise HTTPException(status_code=404, detail="File not found")
+    
+    file_path = TEMP_FILES[file_id]["file_path"]
+    
+    try:
+        with open(file_path, "rb") as audio_file:
+            upload_file = UploadFile(filename=TEMP_FILES[file_id]["original_filename"], file=audio_file)
+            transcript = await TranscriptionService.transcribe_audio(upload_file, "huggingface")
+        TEMP_FILES[file_id]["transcript"] = transcript
+        return {"message": "Transcription completed", "file_id": file_id, "transcript": transcript}
+    except Exception as e:
+        print(f"Error in transcribe_audio_direct_separate: {str(e)}")
+        raise HTTPException(status_code=500, detail=f"Transcription error: {str(e)}")
+
+@router.post("/summarize-direct/{file_id}")
+async def summarize_transcript_direct_separate(file_id: str):
+    """Summarize transcript using file ID (separate endpoint)."""
+    if file_id not in TEMP_FILES:
+        raise HTTPException(status_code=404, detail="File not found")
+    
+    if not TEMP_FILES[file_id].get("transcript"):
+        raise HTTPException(status_code=404, detail="Transcript not found for this file ID")
+    
+    try:
+        transcript = TEMP_FILES[file_id]["transcript"]
+        summary = SummarizationService.summarize_text(transcript)
+        action_items = SummarizationService.extract_action_items(transcript)
+        decisions = SummarizationService.extract_decisions(transcript)
+        TEMP_FILES[file_id]["summary"] = summary
+        TEMP_FILES[file_id]["action_items"] = action_items
+        TEMP_FILES[file_id]["decisions"] = decisions
+        return {
+            "message": "Summarization completed",
+            "file_id": file_id,
+            "summary": summary,
+            "action_items": action_items,
+            "decisions": decisions
+        }
+    except Exception as e:
+        print(f"Error in summarize_transcript_direct_separate: {str(e)}")
+        raise HTTPException(status_code=500, detail=f"Summarization error: {str(e)}")
+
+@router.post("/schedule-direct")
+async def schedule_meeting_direct(payload: DirectScheduleRequest):
+    """Schedule a meeting directly on Google Calendar (no meeting ID required)"""
+    try:
+        event = CalendarService.create_meeting_event(
+            summary=payload.title,
+            description=payload.description,
+            start_time=payload.start_time,
+            end_time=payload.end_time,
+            attendees=payload.attendees
+        )
+        return {
+            "message": "Meeting scheduled successfully",
+            "event_id": event.get("event_id"),
+            "calendar_link": event.get("html_link"),
+            "meet_link": event.get("meet_link")
+        }
+    except Exception as e:
+        print(f"Error scheduling meeting (direct): {str(e)}")
+        raise HTTPException(status_code=500, detail=f"Error scheduling meeting: {str(e)}")
+
+@router.post("/schedule")
+async def schedule_and_create_meeting(
+    meeting: MeetingCreate,
+    db: Session = Depends(get_db)
+):
+    # 1. Create the meeting in the database
+    created_meeting = MeetingService.create_meeting(db, meeting)
+
+    calendar_link = None
+    meet_link = None
+    event_id = None
+
+    # 2. Schedule on Google Calendar
+    if meeting.start_time and meeting.end_time:
+        try:
+            event = CalendarService.create_meeting_event(
+                summary=meeting.title,
+                description=meeting.description or "",
+                start_time=meeting.start_time,
+                end_time=meeting.end_time,
+                attendees=meeting.attendees
+            )
+            event_id = event.get("event_id")
+            calendar_link = event.get("html_link")
+            meet_link = event.get("meet_link")
+            # 3. Store the calendar event ID in the meeting record
+            meeting_update = MeetingUpdate(calendar_event_id=event_id)
+            MeetingService.update_meeting(db, created_meeting.id, meeting_update)
+        except Exception as e:
+            print(f"Failed to schedule meeting {created_meeting.id} on calendar: {e}")
+
+    return {
+        "message": "Meeting scheduled successfully",
+        "id": created_meeting.id,
+        "title": created_meeting.title,
+        "description": created_meeting.description,
+        "start_time": created_meeting.start_time if hasattr(created_meeting, 'start_time') else None,
+        "end_time": created_meeting.end_time if hasattr(created_meeting, 'end_time') else None,
+        "event_id": event_id,
+        "calendar_link": calendar_link,
+        "meet_link": meet_link
+    }
+
+@router.post("/cancel/{process_id}")
+async def cancel_process(process_id: str):
+    """Cancel an ongoing transcription or summarization process"""
+    if ProcessManager.cancel_process(process_id):
+        return {"message": "Process cancellation requested", "process_id": process_id}
+    raise HTTPException(status_code=404, detail="Process not found")

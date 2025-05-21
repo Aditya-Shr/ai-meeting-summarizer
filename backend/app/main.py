@@ -2,7 +2,6 @@ from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 from app.api.routes import meetings, action_items, decisions
 from app.core.config import settings
-import os
 
 app = FastAPI(
     title="AI Meeting Summarizer API",
@@ -10,13 +9,10 @@ app = FastAPI(
     version="1.0.0"
 )
 
-# Get allowed origins from environment variable or use default
-ALLOWED_ORIGINS = os.getenv("ALLOWED_ORIGINS", "*").split(",")
-
-# CORS middleware
+# Configure CORS
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=ALLOWED_ORIGINS,
+    allow_origins=["*"],
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
@@ -29,8 +25,12 @@ app.include_router(decisions.router, prefix="/api/decisions", tags=["decisions"]
 
 @app.get("/")
 async def root():
-    return {"message": "AI Meeting Summarizer API", "status": "running"}
+    return {"message": "Welcome to AI Meeting Summarizer API"}
 
 @app.get("/health")
 async def health_check():
-    return {"status": "healthy"} 
+    return {"status": "healthy"}
+
+if __name__ == "__main__":
+    import uvicorn
+    uvicorn.run(app, host="0.0.0.0", port=8000) 

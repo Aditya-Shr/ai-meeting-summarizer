@@ -8,13 +8,18 @@ import json
 class MeetingService:
     @staticmethod
     def create_meeting(db: Session, meeting: MeetingCreate):
-        meeting_data = meeting.dict()
+        # Explicitly pick fields that exist in the Meeting SQLAlchemy model
+        meeting_model_data = {
+            "title": meeting.title,
+            "description": meeting.description,
+            "date": meeting.date,
+            "duration": meeting.duration,
+            "status": meeting.status
+        }
+        if meeting.participants:
+            meeting_model_data['participants'] = json.dumps(meeting.participants)
         
-        # Convert participants list to JSON string if present
-        if meeting_data.get('participants'):
-            meeting_data['participants'] = json.dumps(meeting_data['participants'])
-        
-        db_meeting = Meeting(**meeting_data)
+        db_meeting = Meeting(**meeting_model_data)
         db.add(db_meeting)
         db.commit()
         db.refresh(db_meeting)

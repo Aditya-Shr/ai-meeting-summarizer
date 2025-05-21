@@ -266,3 +266,6 @@ backend/token.pickle
 backend/meetings.db
 backend/*.log
 backend/.pytest_cache/
+
+# Ignore API documentation file
+API_DOCUMENTATION.md

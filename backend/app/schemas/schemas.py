@@ -1,5 +1,5 @@
 from pydantic import BaseModel
-from typing import Optional, List
+from typing import Optional, List, Dict
 from datetime import datetime
 
 # Meeting schemas
@@ -12,7 +12,9 @@ class MeetingBase(BaseModel):
     status: Optional[str] = None
 
 class MeetingCreate(MeetingBase):
-    pass
+    start_time: Optional[datetime] = None
+    end_time: Optional[datetime] = None
+    attendees: Optional[List[Dict[str, str]]] = None
 
 class MeetingUpdate(BaseModel):
     title: Optional[str] = None
