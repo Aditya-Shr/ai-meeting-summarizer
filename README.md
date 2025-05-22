@@ -55,13 +55,9 @@ venv\Scripts\activate
 # On Mac/Linux:
 source venv/bin/activate
 
-# Install Gradio (and any other frontend-specific Python packages)
+# Install Gradio
 pip install gradio
-# Consider creating a frontend/requirements.txt if you have more dependencies
-# pip freeze > requirements.txt
-# Then in the future: pip install -r requirements.txt
 
-cd .. # Go back to the root directory or backend directory as needed
 ```
 
 ### 3. Database Setup
@@ -102,6 +98,7 @@ SECRET_KEY=e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855
 ### 6. Run the Application
 1. Start Backend:
 ```bash
+cd backend
 uvicorn app.main:app --reload --port 8000
 ```
 
