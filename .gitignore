@@ -246,6 +246,7 @@ instructions.md
 *.bin
 *.db
 uploads/
+backend/token.pickle
 
 # Virtual Environment
 venv/
@@ -262,10 +263,11 @@ env/
 !backend/recreate_db.py
 
 # Project specific sensitive files
-backend/token.pickle
-backend/meetings.db
 backend/*.log
 backend/.pytest_cache/
 
 # Ignore API documentation file
 API_DOCUMENTATION.md
+
+# Added from the code block
+README2.md

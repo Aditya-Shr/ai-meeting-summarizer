@@ -72,20 +72,11 @@ def process_audio(audio_file):
                 result = response.json()
                 transcript = result.get("transcript", "")
                 summary = result.get("summary", "")
-                action_items = result.get("action_items", [])
-                decisions = result.get("decisions", [])
+                action_items = result.get("action_items", "")
+                decisions = result.get("decisions", "")
 
-                def format_items(items, no_text, no_message):
-                    if not items or (isinstance(items, list) and len(items) == 1 and items[0].get("title", "").lower().startswith(no_text)):
-                        return no_message
-                    if isinstance(items, list):
-                        return "\n\n".join(
-                            "\n".join(f"{k.capitalize()}: {v}" for k, v in item.items() if v) for item in items
-                        )
-                    return no_message
-                
-                action_items_str = format_items(action_items, "no action", "No Action Items found")
-                decisions_str = format_items(decisions, "no decision", "No Decisions made")
+                action_items_str = action_items if action_items else "No Action Items found"
+                decisions_str = decisions if decisions else "No Decisions made"
                 return transcript, summary, action_items_str, decisions_str
             elif response.status_code == 499:
                 return "Process cancelled by user", "", "No Action Items found", "No Decisions made"
@@ -255,8 +246,20 @@ with gr.Blocks(title="AI Meeting Summarizer") as demo:
                     gr.Markdown("### Schedule New Meeting")
                     title_sched = gr.Textbox(label="Title")
                     description_sched = gr.Textbox(label="Description")
-                    start_time_sched = gr.Textbox(label="Start Time (YYYY-MM-DDTHH:MM:SS)")
-                    end_time_sched = gr.Textbox(label="End Time (YYYY-MM-DDTHH:MM:SS)")
+                    
+                    # Get current time for placeholder
+                    current_time_formatted = datetime.now().strftime("%Y-%m-%dT%H:%M:%S")
+                    
+                    start_time_sched = gr.Textbox(
+                        label="Start Time", 
+                        placeholder=current_time_formatted, 
+                        info="Format: YYYY-MM-DDTHH:MM:SS"
+                    )
+                    end_time_sched = gr.Textbox(
+                        label="End Time", 
+                        placeholder=current_time_formatted, # Or calculate a default end time e.g., current_time + 1 hour
+                        info="Format: YYYY-MM-DDTHH:MM:SS"
+                    )
                     attendees_sched = gr.Textbox(label="Attendees (Separate emails by Comma)")
                     schedule_btn = gr.Button("Schedule Meeting")
                     schedule_result = gr.HTML(label="Meeting Link")
